@@ -23,7 +23,7 @@ class WebSocketSTTServer:
             self,
             host: str = "0.0.0.0",
             port: int = 8765,
-            model_path: str = "ggml-model",
+            model_path: str = "base",
             samplerate: int = 48000,
             target_samplerate: int = 16000,
             channels: int = 1
@@ -68,7 +68,7 @@ class WebSocketSTTServer:
                 logger.warning(f"no pcm data in Mic packet for user: {user_id}")
                 return
 
-            pcm_data = self.decoder.decode(packet["pcm"], self.samplerate)
+            pcm_data = self.decoder.decode(bytes(packet["pcm"]), self.samplerate)
 
             audio_array = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
 
@@ -189,7 +189,7 @@ if __name__ == "__main__":
     server = WebSocketSTTServer(
         host="0.0.0.0",
         port=8765,
-        model_path="ggml-base",
+        model_path="small",
         samplerate=48000,
         target_samplerate=16000,
         channels=1

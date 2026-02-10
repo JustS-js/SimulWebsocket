@@ -14,8 +14,8 @@ class STTSession:
     def __init__(
             self,
             user_id: UUID,
-            language: str = "en",
-            model_path: str = "ggml-base",
+            language: str = "ru",
+            model_path: str = "base",
             translate: bool = True,
             samplerate: int = 16000,
             block_duration: float = 0.5,
@@ -33,7 +33,23 @@ class STTSession:
         self.frames_per_chunk = int(samplerate * chunk_duration)
         self.channels = channels
 
-        self.asr = SimulWhisperASR(self.language, self.model_path)
+        self.asr = SimulWhisperASR(
+            self.language,
+            self.model_path,
+            None,
+            25,
+            30,
+            0,
+            1,
+            1,
+            None,
+            None,
+            False,
+            "Ребята общаются друг с другом, играя в Майнкрафт.",
+            None,
+            None,
+            None
+        )
         self.model = SimulWhisperOnline(self.asr)
 
         self._callback = callback
