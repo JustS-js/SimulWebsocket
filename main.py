@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Dict
+from typing import Dict, Deque
 from uuid import UUID
 import opuslib
 
@@ -34,12 +34,16 @@ class WebSocketSTTServer:
         self.samplerate = samplerate
         self.target_samplerate = target_samplerate
         self.channels = channels
+        self.buffer_lock = asyncio.Lock()
+        self.transcription_buffer = Deque()
 
         self.sessions: Dict[UUID, STTSession] = {}
         self.decoder = opuslib.Decoder(self.samplerate, self.channels)
 
         self._lock = threading.Lock()
         self._shutdown_event = asyncio.Event()
+
+        self.websocket = None
 
     def resample_audio(self, audio_data: np.ndarray) -> np.ndarray:
         """Ресамплинг аудио с 48kHz до 16kHz"""
@@ -53,8 +57,7 @@ class WebSocketSTTServer:
             #res_type='kaiser_best'  # или 'soxr_hq' для высокого качества
         )
 
-    async def handle_mic(self, packet: dict, websocket: ServerConnection):
-        user_id = packet.get("userId", None)
+    async def handle_mic(self, user_id: UUID, pcm_raw: bytes, websocket: ServerConnection):
         try:
             if user_id not in self.sessions.keys():
                 logger.warning(f"Mic packet for user without session: {user_id}")
@@ -63,12 +66,11 @@ class WebSocketSTTServer:
             with self._lock:
                 session = self.sessions[user_id]
 
-            pcm_raw = packet.get("pcm", None)
             if pcm_raw is None:
                 logger.warning(f"no pcm data in Mic packet for user: {user_id}")
                 return
 
-            pcm_data = self.decoder.decode(bytes(packet["pcm"]), self.samplerate)
+            pcm_data = self.decoder.decode(pcm_raw, self.samplerate)
 
             audio_array = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
 
@@ -80,8 +82,7 @@ class WebSocketSTTServer:
         except Exception as e:
             logger.error(f"Error decoding audio for {user_id}: {e}")
 
-    async def handle_connect(self, packet: dict, websocket: ServerConnection):
-        user_id: UUID = packet.get("userId", None)
+    async def handle_connect(self, user_id: UUID, websocket: ServerConnection):
         if user_id is None:
             logger.warning(f"User Id was not specified in connection packet")
             return
@@ -102,8 +103,7 @@ class WebSocketSTTServer:
 
         session.start()
 
-    async def handle_disconnect(self, packet: dict, websocket: ServerConnection):
-        user_id: UUID = packet.get("userId", None)
+    async def handle_disconnect(self, user_id: UUID, websocket: ServerConnection):
         if user_id is None:
             logger.warning(f"User Id was not specified in disconnection packet")
             return
@@ -121,25 +121,68 @@ class WebSocketSTTServer:
 
         logger.info(f"Session cleaned up for user {user_id}")
 
+    async def check_secondary_buffer(self, websocket: ServerConnection):
+        """Проверка и обработка данных из второстепенного буфера"""
+        async with self.buffer_lock:
+            if not self.transcription_buffer:
+                return
+
+            # Обрабатываем все накопленные данные из буфера
+            while self.transcription_buffer:
+                packet = self.transcription_buffer.popleft()
+                await websocket.send(packet)
+
     async def handle_websocket(self, websocket: ServerConnection):
         """Обработка WebSocket соединения"""
+        self.websocket = websocket
         try:
-            async for message in websocket:
-                packet: dict = json.loads(message)
-                packet_type = packet.get("type", None)
-                if packet_type == "mic":
-                    await self.handle_mic(packet, websocket)
-                elif packet_type == "connect":
-                    await self.handle_connect(packet, websocket)
-                elif packet_type == "disconnect":
-                    await self.handle_disconnect(packet, websocket)
+            websocket_task = asyncio.create_task(self._websocket_receiver(websocket))
+
+            while not self._shutdown_event.is_set():
+                try:
+                    done, pending = await asyncio.wait(
+                        [websocket_task],
+                        timeout=0.1,  # Проверяем буфер каждые 100мс
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    # logger.info("before checking buffer")
+                    await self.check_secondary_buffer(websocket)
+
+                    if websocket_task in done:
+                        # Если задача завершена, перезапускаем её
+                        websocket_task = asyncio.create_task(self._websocket_receiver(websocket))
+                except asyncio.CancelledError:
+                    break
         except ConnectionClosedOK:
             logger.info(f"Connection closed normally")
         except Exception as e:
             logger.error(f"Error in WebSocket handler: {e}")
 
+    async def _websocket_receiver(self, websocket: ServerConnection):
+        """Отдельная задача для приема сообщений из WebSocket"""
+        try:
+            data_bytes: bytes = await websocket.recv()
+            user_id_str = data_bytes[:36].decode("utf-8")
+            user_id = UUID(user_id_str)
+            if len(data_bytes) == 36:
+                await self.handle_mic(user_id, bytes(), websocket)
+                return
+            additional_data = data_bytes[36:]
+            print()
+            if len(additional_data) > 1:
+                await self.handle_mic(user_id, additional_data, websocket)
+            elif additional_data[0] == b'\x00':
+                print(additional_data[0])
+                await self.handle_disconnect(user_id, websocket)
+            else:
+                print(additional_data[0])
+                await self.handle_connect(user_id, websocket)
+        except Exception as e:
+            logger.error(f"Error processing WebSocket message: {e}")
 
-    def _on_transcription(self, user_id: UUID, websocket: ServerConnection, result):
+
+    def _on_transcription(self, user_id: UUID, result):
         """Callback для отправки транскрипции клиенту"""
         try:
             message = json.dumps({
@@ -148,10 +191,9 @@ class WebSocketSTTServer:
                 "result": result
             })
 
-            asyncio.run_coroutine_threadsafe(
-                websocket.send(message),
-                asyncio.get_event_loop()
-            )
+            logger.info("Sending " + message)
+            self.transcription_buffer.append(message)
+
         except Exception as e:
             logger.error(f"Error sending transcription for user {user_id}: {e}")
 
@@ -189,7 +231,7 @@ if __name__ == "__main__":
     server = WebSocketSTTServer(
         host="0.0.0.0",
         port=8765,
-        model_path="small",
+        model_path="base",
         samplerate=48000,
         target_samplerate=16000,
         channels=1

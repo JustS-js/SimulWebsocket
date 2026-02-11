@@ -5,7 +5,7 @@ import numpy as np
 import threading
 import logging
 
-from simulstreaming_whisper import SimulWhisperASR, SimulWhisperOnline
+from faster_whisper import WhisperModel
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,8 @@ class STTSession:
             user_id: UUID,
             language: str = "ru",
             model_path: str = "base",
+            device: str = "cpu",
+            compute_type: str = "float32",
             translate: bool = True,
             samplerate: int = 16000,
             block_duration: float = 0.5,
@@ -33,24 +35,11 @@ class STTSession:
         self.frames_per_chunk = int(samplerate * chunk_duration)
         self.channels = channels
 
-        self.asr = SimulWhisperASR(
-            self.language,
+        self.model = WhisperModel(
             self.model_path,
-            None,
-            25,
-            30,
-            0,
-            1,
-            1,
-            None,
-            None,
-            False,
-            "Ребята общаются друг с другом, играя в Майнкрафт.",
-            None,
-            None,
-            None
+            device=device,
+            compute_type=compute_type
         )
-        self.model = SimulWhisperOnline(self.asr)
 
         self._callback = callback
         self._is_running = False
@@ -83,9 +72,14 @@ class STTSession:
                 except queue.Empty:
                     continue
 
-                self.audio_buffer.append(block)
-
                 total_frames = sum(len(b) for b in self.audio_buffer)
+                print(len(block))
+                if len(block) == 0 and total_frames < self.frames_per_chunk:
+                    frames_left = self.frames_per_chunk - total_frames
+                    block = np.zeros(frames_left, dtype=np.float32)
+                self.audio_buffer.append(block)
+                total_frames += len(block)
+
                 if total_frames >= self.frames_per_chunk:
                     audio_data = np.concatenate(self.audio_buffer)[:self.frames_per_chunk]
                     remaining_frames = total_frames - self.frames_per_chunk
@@ -96,22 +90,30 @@ class STTSession:
                         self.audio_buffer.clear()
 
                     audio_data = audio_data.flatten().astype(np.float32)
-                    self.model.insert_audio_chunk(audio_data)
+                    segments, timestamps = self.model.transcribe(
+                        audio_data,
+                        language=self.language,
+                        beam_size=1
+                    )
 
-                    result = self.model.process_iter()
-                    if self._callback and result:
-                        self._callback(result)
+                    result = [segment.text for segment in segments]
+                    self._callback('; '.join(result))
+                    # self.model.insert_audio_chunk(audio_data)
+                    #
+                    # result = self.model.process_iter()
+                    # if self._callback and result:
+                    #     self._callback(result)
 
             except Exception as e:
                 logger.error(f"Error in transcription task for user {self.user_id}: {e}")
 
-        try:
-            result = self.model.finish()
-            if self._callback and result:
-                self._callback(result)
-
-        except Exception as e:
-            logger.error(f"Error finishing transcription for user {self.user_id}: {e}")
+        # try:
+        #     result = self.model.finish()
+        #     if self._callback and result:
+        #         self._callback(result)
+        #
+        # except Exception as e:
+        #     logger.error(f"Error finishing transcription for user {self.user_id}: {e}")
 
         self._is_running = False
         logger.debug(f"Transcription thread stopped for user {self.user_id}")

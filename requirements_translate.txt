@@ -1,4 +1,0 @@
-ctranslate2
-transformers
-sentencepiece
-jinja2
