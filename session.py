@@ -72,13 +72,14 @@ class STTSession:
                 except queue.Empty:
                     continue
 
-                total_frames = sum(len(b) for b in self.audio_buffer)
-                print(len(block))
-                if len(block) == 0 and total_frames < self.frames_per_chunk:
-                    frames_left = self.frames_per_chunk - total_frames
-                    block = np.zeros(frames_left, dtype=np.float32)
                 self.audio_buffer.append(block)
-                total_frames += len(block)
+                total_frames = sum(len(b) for b in self.audio_buffer)
+                if len(block) == 16000:
+                    frames_left = self.frames_per_chunk - total_frames
+                    self.audio_buffer.append(
+                        np.zeros(frames_left, dtype=np.float32)
+                    )
+                    total_frames += frames_left
 
                 if total_frames >= self.frames_per_chunk:
                     audio_data = np.concatenate(self.audio_buffer)[:self.frames_per_chunk]
@@ -98,22 +99,9 @@ class STTSession:
 
                     result = [segment.text for segment in segments]
                     self._callback('; '.join(result))
-                    # self.model.insert_audio_chunk(audio_data)
-                    #
-                    # result = self.model.process_iter()
-                    # if self._callback and result:
-                    #     self._callback(result)
 
             except Exception as e:
                 logger.error(f"Error in transcription task for user {self.user_id}: {e}")
-
-        # try:
-        #     result = self.model.finish()
-        #     if self._callback and result:
-        #         self._callback(result)
-        #
-        # except Exception as e:
-        #     logger.error(f"Error finishing transcription for user {self.user_id}: {e}")
 
         self._is_running = False
         logger.debug(f"Transcription thread stopped for user {self.user_id}")
