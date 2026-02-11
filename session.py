@@ -74,12 +74,6 @@ class STTSession:
 
                 self.audio_buffer.append(block)
                 total_frames = sum(len(b) for b in self.audio_buffer)
-                if len(block) == 16000:
-                    frames_left = self.frames_per_chunk - total_frames
-                    self.audio_buffer.append(
-                        np.zeros(frames_left, dtype=np.float32)
-                    )
-                    total_frames += frames_left
 
                 if total_frames >= self.frames_per_chunk:
                     audio_data = np.concatenate(self.audio_buffer)[:self.frames_per_chunk]

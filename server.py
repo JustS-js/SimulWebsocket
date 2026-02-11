@@ -26,7 +26,8 @@ class WebSocketSTTServer:
             model_path: str = "base",
             samplerate: int = 48000,
             target_samplerate: int = 16000,
-            channels: int = 1
+            channels: int = 1,
+            device="cpu"
     ):
         self.host = host
         self.port = port
@@ -36,6 +37,7 @@ class WebSocketSTTServer:
         self.channels = channels
         self.buffer_lock = asyncio.Lock()
         self.transcription_buffer = Deque()
+        self.device = device
 
         self.sessions: Dict[UUID, STTSession] = {}
         self.decoder = opuslib.Decoder(self.samplerate, self.channels)
@@ -90,6 +92,7 @@ class WebSocketSTTServer:
             user_id=user_id,
             language="ru",  # или другой язык
             model_path=self.model_path,
+            device=self.device,
             translate=False,  # или True если нужен перевод
             samplerate=self.target_samplerate,
             block_duration=0.5,
@@ -154,8 +157,6 @@ class WebSocketSTTServer:
                         websocket_task = asyncio.create_task(self._websocket_receiver(websocket))
                 except asyncio.CancelledError:
                     break
-        except ConnectionClosedOK:
-            logger.info(f"Connection closed normally")
         except Exception as e:
             logger.error(f"Error in WebSocket handler: {e}")
 
@@ -166,15 +167,18 @@ class WebSocketSTTServer:
             user_id_str = data_bytes[:36].decode("utf-8")
             user_id = UUID(user_id_str)
             if len(data_bytes) == 36:
-                await self.handle_mic(user_id, bytes(), websocket)
+                await self.handle_mic(user_id, bytes([]), websocket)
                 return
             additional_data = data_bytes[36:]
             if len(additional_data) > 1:
                 await self.handle_mic(user_id, additional_data, websocket)
-            elif additional_data[0] == b'\x00':
+            elif additional_data == b'\x00':
                 await self.handle_disconnect(user_id, websocket)
             else:
                 await self.handle_connect(user_id, websocket)
+        except ConnectionClosedOK:
+            self._shutdown_event.set()
+            logger.info(f"Connection closed normally")
         except Exception as e:
             logger.error(f"Error processing WebSocket message: {e}")
 

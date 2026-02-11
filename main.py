@@ -10,10 +10,11 @@ if __name__ == "__main__":
     server = WebSocketSTTServer(
         host="0.0.0.0",
         port=8765,
-        model_path="C:/Users/Just/PycharmProjects/SimulWebsocket/models/faster-whisper-large-v3-turbo-russian",
+        model_path="small",
         samplerate=48000,
         target_samplerate=16000,
-        channels=1
+        channels=1,
+        device="cuda"
     )
 
     try:
